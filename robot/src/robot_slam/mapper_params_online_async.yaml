@@ -1,0 +1,29 @@
+
+slam_toolbox:
+  ros__parameters:
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link
+    scan_topic: /scan_fixed
+
+    mode: mapping
+
+    resolution: 0.05
+    max_laser_range: 10.0
+    min_laser_range: 0.12
+
+    transform_publish_period: 0.02
+    map_update_interval: 2.0
+
+    minimum_travel_distance: 0.3
+    minimum_travel_heading: 0.3
+
+    # 스캔 매칭 정밀도 관련 추가
+    ceres_linear_search_range: 5.0
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    # 루프 클로저 관련 (좁은 공간 반복 매핑 시 위치 재보정에 도움)
+    do_loop_closing: false
+    loop_search_maximum_distance: 3.0

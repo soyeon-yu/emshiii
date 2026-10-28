@@ -1,0 +1,447 @@
+# motor.py
+
+import time
+import threading
+import serial
+
+
+# =========================================================
+# UART 설정
+# =========================================================
+
+UART_PORT = "/dev/serial0"
+BAUDRATE = 115200
+
+# ESP32 응답 대기 최대 시간
+UART_RESPONSE_TIMEOUT = 0.12
+
+# UART 디버그 출력
+UART_DEBUG = True
+
+
+# =========================================================
+# 좌우 속도 보정
+# =========================================================
+
+LEFT_TRIM = 0.98
+RIGHT_TRIM = 1.00
+
+
+# =========================================================
+# UART 초기화
+# =========================================================
+
+ser = serial.Serial(
+    port=UART_PORT,
+    baudrate=BAUDRATE,
+    timeout=0.01,
+    write_timeout=0.1
+)
+
+# 여러 스레드가 UART에 동시에 접근하지 못하도록 보호
+_uart_lock = threading.Lock()
+
+
+# =========================================================
+# 마지막 수신값 및 명령값
+# =========================================================
+
+_last_m1_speed = 0.0
+_last_m2_speed = 0.0
+
+_last_left_cmd = 0
+_last_right_cmd = 0
+
+_last_response_time = 0.0
+
+_last_sensor_distance = None
+_last_sensor_pir = 0
+_last_sensor_time = 0.0
+
+# =========================================================
+# 모터 명령 송수신
+# =========================================================
+
+def send_motor(left_speed, right_speed):
+    """
+    ESP32에 좌우 모터 명령을 전송한다.
+
+    ESP32 응답 형식:
+        OK,left_cmd,right_cmd,m1_speed,m2_speed
+
+    반환:
+        True  : 정상 응답 수신
+        False : 타임아웃 또는 형식 오류
+    """
+
+    global _last_m1_speed
+    global _last_m2_speed
+    global _last_left_cmd
+    global _last_right_cmd
+    global _last_response_time
+
+    global _last_sensor_distance
+    global _last_sensor_pir
+    global _last_sensor_time
+
+# 두 바퀴가 같은 방향일 때만 직진 trim 적용
+    if left_speed * right_speed > 0:
+        left_speed = int(left_speed * LEFT_TRIM)
+        right_speed = int(right_speed * RIGHT_TRIM)
+
+
+    command = f"{left_speed},{right_speed}\n"
+
+    with _uart_lock:
+        try:
+            # ESP32가 주기적으로 보내서 입력 버퍼에 쌓인
+            # 오래된 상태 메시지를 제거한다.
+            ser.reset_input_buffer()
+
+            ser.write(command.encode("utf-8"))
+            ser.flush()
+
+            start_time = time.monotonic()
+
+            while (
+                time.monotonic() - start_time
+                < UART_RESPONSE_TIMEOUT
+            ):
+                raw = ser.readline()
+
+                if not raw:
+                    time.sleep(0.001)
+                    continue
+
+                line = raw.decode(
+                    "utf-8",
+                    errors="ignore"
+                ).strip()
+
+                if not line:
+                    continue
+
+                # SENSOR 응답 처리
+                if line.startswith("SENSOR,"):
+                    parts = line.split(",")
+
+                    if len(parts) == 3:
+                        distance_text = parts[1].strip()
+                        pir_text = parts[2].strip()
+
+                        try:
+                            if distance_text == "NA":
+                                _last_sensor_distance = None
+                            else:
+                                _last_sensor_distance = float(distance_text)
+
+                            _last_sensor_pir = int(pir_text)
+                            _last_sensor_time = time.monotonic()
+
+                            if UART_DEBUG:
+                                print(
+                                    f"\n[SENSOR] "
+                                    f"distance={_last_sensor_distance}, "
+                                    f"pir={_last_sensor_pir}"
+                                )
+
+                        except ValueError:
+                            if UART_DEBUG:
+                                print(
+                                    f"\n[SENSOR PARSE ERROR] {line}"
+                                )
+
+                    continue
+
+                if line == "SENSOR_STARTED":
+                    if UART_DEBUG:
+                        print("\n[SENSOR] started")
+                    continue
+
+                if line == "SENSOR_STOPPED":
+                    if UART_DEBUG:
+                        print("\n[SENSOR] stopped")
+                    continue
+
+                # OK가 아닌 다른 문자열은 출력만 하고 무시
+                if not line.startswith("OK,"):
+                    if UART_DEBUG:
+                        print(
+                            f"\r[ESP32] {line}",
+                            end="",
+                            flush=True
+                        )
+                    continue
+
+                parts = line.split(",")
+
+                # OK,left_cmd,right_cmd,m1_speed,m2_speed
+                if len(parts) != 5:
+                    print(
+                        "\n[UART] 잘못된 응답 형식: "
+                        f"{repr(line)}, 항목 수={len(parts)}"
+                    )
+                    continue
+
+                try:
+                    received_left_cmd = int(
+                        float(parts[1])
+                    )
+
+                    received_right_cmd = int(
+                        float(parts[2])
+                    )
+
+                    m1_speed = float(parts[3])
+                    m2_speed = float(parts[4])
+
+                except ValueError:
+                    print(
+                        "\n[UART] 숫자 변환 실패: "
+                        f"{repr(line)}"
+                    )
+                    continue
+
+                # ESP32가 계산한 signed PPS를 그대로 저장
+                _last_m1_speed = m1_speed
+                _last_m2_speed = m2_speed
+
+                # Raspberry Pi가 요청한 논리적 명령값 저장
+                _last_left_cmd = left_speed
+                _last_right_cmd = right_speed
+
+                _last_response_time = time.monotonic()
+
+                if UART_DEBUG:
+                    print(
+                        f"\r[UART OK] "
+                        f"RX CMD L={received_left_cmd:5d}, "
+                        f"R={received_right_cmd:5d} | "
+                        f"M1={m1_speed:8.1f} pps, "
+                        f"M2={m2_speed:8.1f} pps",
+                        end="",
+                        flush=True
+                    )
+
+                return True
+
+            if UART_DEBUG:
+                print(
+                    "\n[UART WARNING] OK 응답 없음 | "
+                    f"전송 명령 L={left_speed}, "
+                    f"R={right_speed}"
+                )
+
+            return False
+
+        except serial.SerialTimeoutException as error:
+            print(
+                f"\n[UART WRITE TIMEOUT] {error}"
+            )
+            return False
+
+        except serial.SerialException as error:
+            print(
+                f"\n[UART SERIAL ERROR] {error}"
+            )
+            return False
+
+        except Exception as error:
+            print(
+                f"\n[UART ERROR] {error}"
+            )
+            return False
+
+
+# =========================================================
+# 엔코더 데이터 조회
+# =========================================================
+
+def get_encoder_speed():
+    """
+    ESP32에서 마지막으로 수신한 엔코더 속도를 반환한다.
+
+    반환:
+        m1_speed, m2_speed
+
+    단위:
+        count/s, 즉 PPS
+    """
+
+    return _last_m1_speed, _last_m2_speed
+
+
+def get_signed_encoder_speed():
+    """
+    실제 바퀴 기준 signed PPS 반환
+
+    M2 = 실제 왼쪽 바퀴
+    M1 = 실제 오른쪽 바퀴
+    """
+
+    return _last_m2_speed, _last_m1_speed
+
+
+def get_last_command():
+    """
+    Raspberry Pi에서 마지막으로 전송한 명령을 반환한다.
+    """
+
+    return _last_left_cmd, _last_right_cmd
+
+
+def get_last_response_age():
+    """
+    마지막 정상 UART 응답 이후 경과 시간을 반환한다.
+
+    정상 응답이 한 번도 없었다면 무한대를 반환한다.
+    """
+
+    if _last_response_time <= 0.0:
+        return float("inf")
+
+    return (
+        time.monotonic()
+        - _last_response_time
+    )
+
+def get_sensor_data():
+    """
+    마지막으로 수신한 센서값을 반환한다.
+
+    반환:
+        distance_cm : 초음파 거리(cm), 측정 실패 시 None
+        pir_value   : PIR 값(0 또는 1)
+        age_sec     : 마지막 센서 수신 후 경과 시간
+    """
+
+    if _last_sensor_time <= 0.0:
+        return None, 0, float("inf")
+
+    age_sec = time.monotonic() - _last_sensor_time
+
+    return (
+        _last_sensor_distance,
+        _last_sensor_pir,
+        age_sec
+    )
+
+# =========================================================
+# 마지막 명령 재전송
+# =========================================================
+
+def resend_last_command():
+    """
+    마지막 명령을 다시 전송하고
+    최신 엔코더 PPS를 수신한다.
+    """
+
+    return send_motor(
+        _last_left_cmd,
+        _last_right_cmd
+    )
+
+
+# =========================================================
+# 기본 주행 함수
+# =========================================================
+
+def stop_robot():
+    """
+    로봇 정지
+    """
+
+    return send_motor(0, 0)
+
+
+def drive_forward(speed=220):
+    """
+    전진
+    """
+
+    left_speed = int(
+        speed * LEFT_TRIM
+    )
+
+    right_speed = int(
+        speed * RIGHT_TRIM
+    )
+
+    return send_motor(
+        left_speed,
+        right_speed
+    )
+
+
+def drive_backward(speed=180):
+    """
+    후진
+    """
+
+    left_speed = int(
+        -speed * LEFT_TRIM
+    )
+
+    right_speed = int(
+        -speed * RIGHT_TRIM
+    )
+
+    return send_motor(
+        left_speed,
+        right_speed
+    )
+
+
+def turn_left_arc(outer=360, inner=0):
+    """
+    좌회전 아크턴
+
+    왼쪽 바퀴:
+        안쪽 바퀴
+
+    오른쪽 바퀴:
+        바깥쪽 바퀴
+    """
+
+    return send_motor(
+        inner,
+        outer
+    )
+
+
+def turn_right_arc(outer=360, inner=0):
+    """
+    우회전 아크턴
+
+    왼쪽 바퀴:
+        바깥쪽 바퀴
+
+    오른쪽 바퀴:
+        안쪽 바퀴
+    """
+
+    return send_motor(
+        outer,
+        inner
+    )
+
+
+# =========================================================
+# UART 종료
+# =========================================================
+
+def close_motor():
+    """
+    모터를 정지하고 UART 포트를 닫는다.
+    """
+
+    try:
+        if ser.is_open:
+            stop_robot()
+            time.sleep(0.05)
+            ser.close()
+
+    except Exception as error:
+        print(
+            f"\n[MOTOR CLOSE ERROR] {error}"
+        )

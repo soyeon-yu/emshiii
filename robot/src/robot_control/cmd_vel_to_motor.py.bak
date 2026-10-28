@@ -1,0 +1,111 @@
+import rclpy
+from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+
+from geometry_msgs.msg import Twist
+
+import motor
+from odom_publisher import OdomPublisher
+
+
+# ==============================
+# 로봇 파라미터
+# ==============================
+
+TRACK_WIDTH = 0.378
+
+
+# ==============================
+# CMD <-> 속도 변환
+# ==============================
+
+# 측정값: CMD=160 -> 약 0.089 m/s
+CMD_PER_MPS = 1797.0
+
+MOTOR_LIMIT = 500
+
+
+class CmdVelToMotor(Node):
+    """
+    /cmd_vel을 받아 좌우 바퀴 명령으로 변환한다.
+    odom 계산과 발행은 OdomPublisher가 담당한다.
+    """
+
+    def __init__(self):
+        super().__init__("cmd_vel_to_motor")
+
+        self.cmd_group = MutuallyExclusiveCallbackGroup()
+
+        self.cmd_sub = self.create_subscription(
+            Twist,
+            "/cmd_vel",
+            self.cmd_callback,
+            10,
+            callback_group=self.cmd_group
+        )
+
+        self.get_logger().info("cmd_vel_to_motor started")
+
+    def cmd_callback(self, msg):
+        linear = msg.linear.x
+        angular = msg.angular.z
+
+        # 차동구동 속도 계산
+        left_speed = linear - angular * TRACK_WIDTH / 2.0
+        right_speed = linear + angular * TRACK_WIDTH / 2.0
+
+        # m/s를 모터 명령값으로 변환
+        left_cmd = int(left_speed * CMD_PER_MPS)
+        right_cmd = int(right_speed * CMD_PER_MPS)
+
+        # 모터 명령 제한
+        left_cmd = max(
+            -MOTOR_LIMIT,
+            min(MOTOR_LIMIT, left_cmd)
+        )
+
+        right_cmd = max(
+            -MOTOR_LIMIT,
+            min(MOTOR_LIMIT, right_cmd)
+        )
+
+        motor.send_motor(left_cmd, right_cmd)
+
+        print(
+            f"[CMD_VEL] "
+            f"linear={linear:.3f} "
+            f"angular={angular:.3f} "
+            f"CMD=({left_cmd},{right_cmd})"
+        )
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    cmd_node = CmdVelToMotor()
+    odom_node = OdomPublisher()
+
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(cmd_node)
+    executor.add_node(odom_node)
+
+    try:
+        executor.spin()
+
+    except KeyboardInterrupt:
+        pass
+
+    finally:
+        motor.stop_robot()
+        motor.close_motor()
+
+        cmd_node.destroy_node()
+        odom_node.destroy_node()
+
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

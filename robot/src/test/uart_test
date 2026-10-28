@@ -1,0 +1,14 @@
+# uart_test.py (임시 테스트용)
+import time
+import motor
+
+try:
+    while True:
+        motor.drive_forward(150)
+        m1, m2 = motor.get_encoder_speed()
+        print(f"M1 speed(pps): {m1:.1f} | M2 speed(pps): {m2:.1f}")
+        time.sleep(0.2)
+except KeyboardInterrupt:
+    motor.stop_robot()
+    motor.close_motor()
+
