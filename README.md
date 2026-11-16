@@ -184,14 +184,11 @@ rviz2
 <좌표 저장>
 
 1. 노트북에서 좌표 저장
-
 노트북에서 실행:
-
 cd ~/turtlebot_test
 python3 record_book_coords.py
 
 2. 저장된 좌표를 라즈베리파이로 복사
-
 scp ~/turtlebot_test/book_locations.json \
 원격접속코드:~/turtlebot_test/book_locations.json
 
