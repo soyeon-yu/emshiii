@@ -147,7 +147,7 @@ SSH 터미널 5 — 모터 명령 변환 노드 실행
 source /opt/ros/humble/setup.bash
 source ~/M_J_T/robot/ros2_ws/install/setup.bash
 export ROS_DOMAIN_ID=30
-export PI_API_KEY='SuperSecretRobotKey2026!'
+export PI_API_KEY='API 키 넣기'
 
 cd ~/M_J_T/robot/ros2_ws/src/robot_control
 python3 cmd_vel_to_motor.py
@@ -185,7 +185,7 @@ python3 record_book_coords.py
 
 2. 저장된 좌표를 라즈베리파이로 복사
 scp ~/turtlebot_test/book_locations.json \
-soyeon@soyeon-desktop.local:~/turtlebot_test/book_locations.json
+원격접속코드:~/turtlebot_test/book_locations.json
 
 -----------정상확인-----------------
 3. 노트북에 새로 저장한 JSON 확인
