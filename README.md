@@ -192,6 +192,7 @@ scp ~/turtlebot_test/book_locations.json \
 원격접속코드:~/turtlebot_test/book_locations.json
 
 -----------정상확인-----------------
+
 3. 노트북에 새로 저장한 JSON 확인
 노트북 터미널:
 hostname
