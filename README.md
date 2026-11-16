@@ -92,6 +92,7 @@ rviz2
 <맵핑 후 저장>
 
 SSH 터미널
+
 source /opt/ros/humble/setup.bash
 mkdir -p ~/M_J_T/robot/maps      // 맵을 저장할 폴더 만듦 (앞으로 여기에다 저장할거임. 만들엇으니까 앞으로는 할필요없는 명령어)
 ros2 run nav2_map_server map_saver_cli -f ~/M_J_T/robot/maps/test2    // 맵 저장 명령. test2자리에 원하는 맵 이름 넣으면 됨
@@ -183,11 +184,14 @@ rviz2
 <좌표 저장>
 
 1. 노트북에서 좌표 저장
+
 노트북에서 실행:
+
 cd ~/turtlebot_test
 python3 record_book_coords.py
 
-2. 저장된 좌표를 라즈베리파이로 복사
+3. 저장된 좌표를 라즈베리파이로 복사
+
 scp ~/turtlebot_test/book_locations.json \
 원격접속코드:~/turtlebot_test/book_locations.json
 
