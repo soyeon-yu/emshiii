@@ -42,6 +42,14 @@ CMD_PER_MPS = 1797.0
 
 MOTOR_LIMIT = 500
 
+# 피벗 회전 방지: 안쪽 바퀴가 이 속도(m/s)보다 느려지면 제자리 회전으로 전환
+INNER_MIN = 0.10
+INNER_EXIT = 0.125   # 제자리 회전 해제 기준 (히스테리시스)
+W_MIN = 0.08      # 이 각속도(rad/s) 이하의 약한 회전엔 적용 안 함
+
+# 제자리 회전 시 각 바퀴가 받을 최소 CMD (하중 아래에서도 돌게)
+ROT_MIN_CMD = 80
+
 
 class CmdVelToMotor(Node):
 
@@ -80,6 +88,7 @@ class CmdVelToMotor(Node):
         # =================================================
 
         self.emergency_stop = False
+        self.pivot_lock = False
 
         # =================================================
         # /cmd_vel Subscriber
@@ -216,6 +225,22 @@ class CmdVelToMotor(Node):
             msg.angular.z
         )
 
+        # 안쪽 바퀴가 거의 멈추는 피벗 상태면 직진을 빼고 제자리 회전만 한다
+        a = abs(angular)
+        if a > W_MIN and linear >= 0.0:
+            inner = linear - a * TRACK_WIDTH / 2.0
+            if self.pivot_lock:
+                # 제자리 회전에 들어갔으면 안쪽 바퀴가 충분히 빨라질 때까지 유지
+                if inner > INNER_EXIT:
+                    self.pivot_lock = False
+                else:
+                    linear = 0.0
+            elif linear > 0.0 and inner < INNER_MIN:
+                self.pivot_lock = True
+                linear = 0.0
+        else:
+            self.pivot_lock = False
+
         # =================================================
         # 차동구동 속도 계산
         # =================================================
@@ -247,6 +272,13 @@ class CmdVelToMotor(Node):
             right_speed
             * CMD_PER_MPS
         )
+
+        # 제자리 회전이 너무 약하면 최소 CMD까지 올린다
+        if linear == 0.0 and abs(angular) >= 0.05:
+            sign = 1 if angular > 0 else -1
+            mag = max(abs(left_cmd), ROT_MIN_CMD)
+            left_cmd = -sign * mag
+            right_cmd = sign * mag
 
         # =================================================
         # 모터 명령 제한

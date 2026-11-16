@@ -26,6 +26,11 @@ CHECK_PERIOD = 0.1
 
 ESTOP_REPUBLISH_INTERVAL = 1.0
 
+# [수정] /app/follower_check_enable=True 신호가
+# 이 시간(초) 이상 끊기면 감시를 OFF로 되돌린다.
+# (bridge의 heartbeat 주기 0.5초보다 충분히 길게)
+ENABLE_TIMEOUT = 1.5
+
 PI_API_KEY = os.environ.get("PI_API_KEY", "")
 
 ALERT_URL = "https://what-small-smart-3-1.onrender.com/alert"
@@ -35,13 +40,16 @@ ALERT_COOLDOWN_SEC = 3.0
 
 class FollowerSafetyNode(Node):
     """
-    노드가 실행되는 동안 초음파 센서를 계속 감시한다.
+    초음파 측정은 항상 유지하지만,
+    이탈 판정(E-stop / 앱 경고)은 감시가 ON일 때만 한다.
 
-    - 노드 시작 시 ESP32에 START 전송
+    - 기본값은 감시 OFF
+    - /app/follower_check_enable = True 신호가 계속 들어오는 동안만 ON
+      (신호가 ENABLE_TIMEOUT초 끊기면 자동으로 OFF)
     - 거리 > 80cm 이면 /app/emergency_stop = True
-    - 긴급정지 상태에서도 초음파 측정은 계속 유지
     - 거리 <= 80cm 상태가 연속 3회 확인되면
       /app/emergency_stop = False
+    - 감시가 OFF로 바뀌는 순간, 걸려 있던 E-stop도 해제한다
     """
 
     def __init__(self):
@@ -57,6 +65,18 @@ class FollowerSafetyNode(Node):
             CHECK_PERIOD,
             self.check_sensor
         )
+
+        # 감시 ON/OFF 제어용 구독
+        self.enable_sub = self.create_subscription(
+            Bool,
+            "/app/follower_check_enable",
+            self.enable_callback,
+            10
+        )
+
+        # [수정] 기본값 OFF
+        self.enabled_until = 0.0
+        self.check_disabled = True
 
         self.sensing_enabled = False
         self.is_dropped_out = False
@@ -76,8 +96,14 @@ class FollowerSafetyNode(Node):
             f"{DROPOUT_THRESHOLD_CM:.1f}cm"
         )
 
+        self.get_logger().info(
+            "이탈 감시 기본값: OFF "
+            "(follower_check_enable=True 수신 중에만 ON)"
+        )
+
         # -------------------------------------------------
         # 노드 시작과 동시에 초음파 측정 시작
+        # (측정은 항상 켜두고, 판정만 enable 신호로 제어)
         # -------------------------------------------------
         start_ok = motor.send_sensor_start()
 
@@ -86,10 +112,6 @@ class FollowerSafetyNode(Node):
 
             self.get_logger().info(
                 "ESP32 초음파 센서 START 전송 완료"
-            )
-
-            self.get_logger().info(
-                "초음파 안전 감시 상시 활성화"
             )
 
         else:
@@ -104,6 +126,18 @@ class FollowerSafetyNode(Node):
                 "PI_API_KEY 환경변수가 설정되지 않았습니다. "
                 "로봇 E-stop은 동작하지만 웹 /alert 전송은 실패할 수 있습니다."
             )
+
+
+    def enable_callback(self, msg):
+        # [수정] True 신호가 계속 와야 감시가 유지된다.
+        if msg.data:
+            self.enabled_until = (
+                time.monotonic()
+                + ENABLE_TIMEOUT
+            )
+        else:
+            # False: 즉시 감시 OFF
+            self.enabled_until = 0.0
 
 
     def publish_estop(self, value):
@@ -170,6 +204,39 @@ class FollowerSafetyNode(Node):
 
     def check_sensor(self):
         if not self.sensing_enabled:
+            return
+
+        # =================================================
+        # 감시 ON/OFF 확인
+        # =================================================
+        # [수정] enabled_until 이전일 때만 감시 ON
+        disabled = (
+            time.monotonic()
+            >= self.enabled_until
+        )
+
+        # 상태가 바뀐 순간 한 번만 처리
+        if disabled != self.check_disabled:
+            self.check_disabled = disabled
+            self.recovery_streak = 0
+            self.last_processed_sample_time = None
+
+            if disabled:
+                self.get_logger().info(
+                    "추종자 이탈 감시 OFF"
+                )
+
+                # 꺼지는 순간 한 번만, 내부 상태와 무관하게 E-stop 해제
+                self.is_dropped_out = False
+                self.publish_estop(False)
+            else:
+                self.get_logger().info(
+                    "추종자 이탈 감시 ON"
+                )
+
+        if disabled:
+            # 감시 OFF: 이탈 판정은 하지 않는다.
+            # (초음파 측정 자체는 계속 유지됨)
             return
 
         # motor.py 수정본:
@@ -262,8 +329,6 @@ class FollowerSafetyNode(Node):
                 ):
                     self.publish_estop(True)
 
-            # 여기서 모터만 정지 상태가 유지되고,
-            # 초음파 check_sensor() timer는 계속 실행된다.
             return
 
         # =================================================
